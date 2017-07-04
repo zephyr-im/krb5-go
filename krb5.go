@@ -17,23 +17,73 @@ package krb5
 
 // #cgo LDFLAGS: -lkrb5 -lk5crypto -lcom_err
 // #include <krb5.h>
+// #include <limits.h>
 // #include <string.h>
+//
+// static krb5_error_code make_checksum(krb5_context context,
+//                                      krb5_cksumtype cksumtype,
+//                                      krb5_enctype key_enctype,
+//                                      unsigned key_length,
+//                                      krb5_octet *key_contents,
+//                                      krb5_keyusage usage,
+//                                      char *input_data,
+//                                      unsigned input_length,
+//                                      krb5_checksum *cksum) {
+//   krb5_keyblock key;
+//   key.enctype = key_enctype;
+//   key.length = key_length;
+//   key.contents = key_contents;
+//
+//   krb5_data input;
+//   input.data = input_data;
+//   input.length = input_length;
+//
+//   return krb5_c_make_checksum(context, cksumtype, &key, usage, &input, cksum);
+// }
+//
+// static krb5_error_code verify_checksum(krb5_context context,
+//                                        krb5_enctype key_enctype,
+//                                        unsigned key_length,
+//                                        krb5_octet *key_contents,
+//                                        krb5_keyusage usage,
+//                                        char *input_data,
+//                                        unsigned input_length,
+//                                        krb5_cksumtype cksum_type,
+//                                        unsigned cksum_length,
+//                                        krb5_octet *cksum_contents,
+//                                        krb5_boolean *valid) {
+//   krb5_keyblock key;
+//   key.enctype = key_enctype;
+//   key.length = key_length;
+//   key.contents = key_contents;
+//
+//   krb5_data input;
+//   input.data = input_data;
+//   input.length = input_length;
+//
+//   krb5_checksum cksum;
+//   cksum.checksum_type = cksum_type;
+//   cksum.length = cksum_length;
+//   cksum.contents = cksum_contents;
+//
+//   return krb5_c_verify_checksum(context, &key, usage, &input, &cksum, valid);
+// }
 import "C"
 
 import (
+	"math"
 	"time"
 	"unsafe"
 )
 
 func bytesToKrb5Data(b []byte) C.krb5_data {
-	if b == nil || len(b) == 0 {
+	if len(b) == 0 {
 		return C.krb5_data{length: 0, data: nil}
 	}
-	data := C.malloc(C.size_t(len(b)))
-	C.memcpy(data, unsafe.Pointer(&b[0]), C.size_t(len(b)))
-	return C.krb5_data{
-		length: C.uint(len(b)),
-		data:   (*C.char)(data)}
+	if len(b) > C.UINT_MAX {
+		panic("Data too large.")
+	}
+	return C.krb5_data{length: C.uint(len(b)), data: (*C.char)(C.CBytes(b))}
 }
 
 func stringToKrb5Data(s string) C.krb5_data {
@@ -57,11 +107,11 @@ func krb5DataToString(d *C.krb5_data) string {
 }
 
 func krb5DataToBytes(d *C.krb5_data) []byte {
-	if d.data == nil {
-		if d.length != 0 {
-			panic(d.length)
-		}
-		return make([]byte, 0)
+	if d.length == 0 {
+		return nil
+	}
+	if d.length > C.INT_MAX {
+		panic("Length too large.")
 	}
 	return C.GoBytes(unsafe.Pointer(d.data), C.int(d.length))
 }
@@ -71,6 +121,13 @@ func unsafeOctetPtr(b []byte) *C.krb5_octet {
 		return nil
 	}
 	return (*C.krb5_octet)(unsafe.Pointer(&b[0]))
+}
+
+func unsafeCharPtr(b []byte) *C.char {
+	if len(b) == 0 {
+		return nil
+	}
+	return (*C.char)(unsafe.Pointer(&b[0]))
 }
 
 // Error-handling.
@@ -90,7 +147,7 @@ func (err *Error) ErrorCode() int32 {
 // Error implements the error interface. It returns the error from
 // obtained from krb5.
 func (err *Error) Error() string {
-	ctx := C.krb5_context(nil)
+	var ctx C.krb5_context
 	if err.context != nil {
 		ctx = err.context.ctx
 	}
@@ -188,24 +245,25 @@ func principalFromC(princ C.krb5_principal) *Principal {
 		Data:  data}
 }
 
-// Result is freed with freeKrb5PrincipalData
+// toC converts p to a C structure. It must be freed with
+// freeKrb5PrincipalData.
 func (p *Principal) toC() C.krb5_principal_data {
 	data := p.Data
 	// Don't crash on empty strings.
 	if len(p.Data) == 0 {
 		data = []string{""}
 	}
-	dataKrb := make([]C.krb5_data, 0, len(data))
-	for _, v := range data {
-		dataKrb = append(dataKrb, stringToKrb5Data(v))
+	if len(p.Data) > math.MaxUint32 {
+		panic("Principal too large.")
 	}
-	if len(dataKrb) != len(data) {
-		panic(len(dataKrb))
+	dataC := C.malloc(C.size_t(C.sizeof_krb5_data * len(data)))
+	dataCast := (*[1 << 30]C.krb5_data)(dataC)
+	for i, v := range data {
+		dataCast[i] = stringToKrb5Data(v)
 	}
-	dataKrbPtr := (*C.krb5_data)(unsafe.Pointer(&dataKrb[0]))
 	return C.krb5_principal_data{
 		realm:  stringToKrb5Data(p.Realm),
-		data:   dataKrbPtr,
+		data:   (*C.krb5_data)(dataC),
 		length: C.krb5_int32(len(data)),
 		_type:  C.krb5_int32(p.Type)}
 }
@@ -218,7 +276,8 @@ func freeKrb5PrincipalData(p *C.krb5_principal_data) {
 	}
 }
 
-// Result is freed with C.krb5_free_principal.
+// toCPtr converts p to a krb5-owned C.krb5_principal. It must be freed with
+// C.krb5_free_principal.
 func (p *Principal) toCPtr(ctx *Context) C.krb5_principal {
 	templ := p.toC()
 	defer freeKrb5PrincipalData(&templ)
@@ -265,16 +324,8 @@ type Checksum struct {
 
 func checksumFromC(cksum *C.krb5_checksum) *Checksum {
 	return &Checksum{
-		SumType: SumType(cksum.checksum_type),
-		Contents: C.GoBytes(unsafe.Pointer(cksum.contents),
-			C.int(cksum.length))}
-}
-
-func (c *Checksum) toC() C.krb5_checksum {
-	return C.krb5_checksum{
-		checksum_type: C.krb5_cksumtype(c.SumType),
-		length:        C.uint(len(c.Contents)),
-		contents:      unsafeOctetPtr(c.Contents)}
+		SumType:  SumType(cksum.checksum_type),
+		Contents: C.GoBytes(unsafe.Pointer(cksum.contents), C.int(cksum.length))}
 }
 
 // A KeyBlock is a value type containing a Kerberos key.
@@ -299,7 +350,7 @@ func (k *KeyBlock) toC() C.krb5_keyblock {
 
 // MakeRandomKey generates a random key for a given enctype.
 func (ctx *Context) MakeRandomKey(encType EncType) (*KeyBlock, error) {
-	out := C.krb5_keyblock{}
+	var out C.krb5_keyblock
 	if code := C.krb5_c_make_random_key(ctx.ctx, C.krb5_enctype(encType), &out); code != 0 {
 		return nil, ctx.makeError(code)
 	}
@@ -308,18 +359,9 @@ func (ctx *Context) MakeRandomKey(encType EncType) (*KeyBlock, error) {
 }
 
 // MakeChecksum generates a checksum for the input keyed by a supplied key.
-func (ctx *Context) MakeChecksum(
-	sumType SumType,
-	key *KeyBlock,
-	usage int32,
-	input []byte,
-) (*Checksum, error) {
-	keyblock := key.toC()
-	inputC := bytesToKrb5Data(input)
-	defer freeKrb5Data(&inputC)
-	cksum := C.krb5_checksum{}
-	if code := C.krb5_c_make_checksum(ctx.ctx, C.krb5_cksumtype(sumType), &keyblock,
-		C.krb5_keyusage(usage), &inputC, &cksum); code != 0 {
+func (ctx *Context) MakeChecksum(sumType SumType, key *KeyBlock, usage int32, input []byte) (*Checksum, error) {
+	var cksum C.krb5_checksum
+	if code := C.make_checksum(ctx.ctx, C.krb5_cksumtype(sumType), C.krb5_enctype(key.EncType), C.uint(len(key.Contents)), unsafeOctetPtr(key.Contents), C.krb5_keyusage(usage), unsafeCharPtr(input), C.uint(len(input)), &cksum); code != 0 {
 		return nil, ctx.makeError(code)
 	}
 	defer C.krb5_free_checksum_contents(ctx.ctx, &cksum)
@@ -327,19 +369,9 @@ func (ctx *Context) MakeChecksum(
 }
 
 // VerifyChecksum verifies a checksum given a key and parameters.
-func (ctx *Context) VerifyChecksum(
-	key *KeyBlock,
-	usage int32,
-	data []byte,
-	checksum *Checksum,
-) (bool, error) {
-	cksum := checksum.toC()
-	keyblock := key.toC()
-	valid := C.krb5_boolean(0)
-	krbData := bytesToKrb5Data(data)
-	defer freeKrb5Data(&krbData)
-	if code := C.krb5_c_verify_checksum(ctx.ctx, &keyblock,
-		C.krb5_keyusage(usage), &krbData, &cksum, &valid); code != 0 {
+func (ctx *Context) VerifyChecksum(key *KeyBlock, usage int32, data []byte, checksum *Checksum) (bool, error) {
+	var valid C.krb5_boolean
+	if code := C.verify_checksum(ctx.ctx, C.krb5_enctype(key.EncType), C.uint(len(key.Contents)), unsafeOctetPtr(key.Contents), C.krb5_keyusage(usage), unsafeCharPtr(data), C.uint(len(data)), C.krb5_cksumtype(checksum.SumType), C.uint(len(checksum.Contents)), unsafeOctetPtr(checksum.Contents), &valid); code != 0 {
 		return false, ctx.makeError(code)
 	}
 	return valid != 0, nil

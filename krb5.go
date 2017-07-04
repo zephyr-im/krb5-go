@@ -22,51 +22,20 @@ package krb5
 //
 // static krb5_error_code make_checksum(krb5_context context,
 //                                      krb5_cksumtype cksumtype,
-//                                      krb5_enctype key_enctype,
-//                                      unsigned key_length,
-//                                      krb5_octet *key_contents,
+//                                      krb5_keyblock key,
 //                                      krb5_keyusage usage,
-//                                      char *input_data,
-//                                      unsigned input_length,
+//                                      krb5_data input,
 //                                      krb5_checksum *cksum) {
-//   krb5_keyblock key;
-//   key.enctype = key_enctype;
-//   key.length = key_length;
-//   key.contents = key_contents;
-//
-//   krb5_data input;
-//   input.data = input_data;
-//   input.length = input_length;
-//
 //   return krb5_c_make_checksum(context, cksumtype, &key, usage, &input, cksum);
 // }
 //
 // static krb5_error_code verify_checksum(krb5_context context,
-//                                        krb5_enctype key_enctype,
-//                                        unsigned key_length,
-//                                        krb5_octet *key_contents,
+//                                        krb5_keyblock key,
 //                                        krb5_keyusage usage,
-//                                        char *input_data,
-//                                        unsigned input_length,
-//                                        krb5_cksumtype cksum_type,
-//                                        unsigned cksum_length,
-//                                        krb5_octet *cksum_contents,
+//                                        krb5_data data,
+//                                        krb5_checksum cksum,
 //                                        krb5_boolean *valid) {
-//   krb5_keyblock key;
-//   key.enctype = key_enctype;
-//   key.length = key_length;
-//   key.contents = key_contents;
-//
-//   krb5_data input;
-//   input.data = input_data;
-//   input.length = input_length;
-//
-//   krb5_checksum cksum;
-//   cksum.checksum_type = cksum_type;
-//   cksum.length = cksum_length;
-//   cksum.contents = cksum_contents;
-//
-//   return krb5_c_verify_checksum(context, &key, usage, &input, &cksum, valid);
+//   return krb5_c_verify_checksum(context, &key, usage, &data, &cksum, valid);
 // }
 import "C"
 
@@ -84,6 +53,13 @@ func bytesToKrb5Data(b []byte) C.krb5_data {
 		panic("Data too large.")
 	}
 	return C.krb5_data{length: C.uint(len(b)), data: (*C.char)(C.CBytes(b))}
+}
+
+func bytesToKrb5DataAlias(b []byte) C.krb5_data {
+	if len(b) > C.UINT_MAX {
+		panic("Data too large.")
+	}
+	return C.krb5_data{length: C.uint(len(b)), data: unsafeCharPtr(b)}
 }
 
 func stringToKrb5Data(s string) C.krb5_data {
@@ -328,6 +304,13 @@ func checksumFromC(cksum *C.krb5_checksum) *Checksum {
 		Contents: C.GoBytes(unsafe.Pointer(cksum.contents), C.int(cksum.length))}
 }
 
+func (c *Checksum) toC() C.krb5_checksum {
+	return C.krb5_checksum{
+		checksum_type: C.krb5_cksumtype(c.SumType),
+		length:        C.uint(len(c.Contents)),
+		contents:      unsafeOctetPtr(c.Contents)}
+}
+
 // A KeyBlock is a value type containing a Kerberos key.
 // TODO(davidben): Wrap krb5_key if the performance is ever relevant.
 type KeyBlock struct {
@@ -361,7 +344,7 @@ func (ctx *Context) MakeRandomKey(encType EncType) (*KeyBlock, error) {
 // MakeChecksum generates a checksum for the input keyed by a supplied key.
 func (ctx *Context) MakeChecksum(sumType SumType, key *KeyBlock, usage int32, input []byte) (*Checksum, error) {
 	var cksum C.krb5_checksum
-	if code := C.make_checksum(ctx.ctx, C.krb5_cksumtype(sumType), C.krb5_enctype(key.EncType), C.uint(len(key.Contents)), unsafeOctetPtr(key.Contents), C.krb5_keyusage(usage), unsafeCharPtr(input), C.uint(len(input)), &cksum); code != 0 {
+	if code := C.make_checksum(ctx.ctx, C.krb5_cksumtype(sumType), key.toC(), C.krb5_keyusage(usage), bytesToKrb5DataAlias(input), &cksum); code != 0 {
 		return nil, ctx.makeError(code)
 	}
 	defer C.krb5_free_checksum_contents(ctx.ctx, &cksum)
@@ -371,7 +354,7 @@ func (ctx *Context) MakeChecksum(sumType SumType, key *KeyBlock, usage int32, in
 // VerifyChecksum verifies a checksum given a key and parameters.
 func (ctx *Context) VerifyChecksum(key *KeyBlock, usage int32, data []byte, checksum *Checksum) (bool, error) {
 	var valid C.krb5_boolean
-	if code := C.verify_checksum(ctx.ctx, C.krb5_enctype(key.EncType), C.uint(len(key.Contents)), unsafeOctetPtr(key.Contents), C.krb5_keyusage(usage), unsafeCharPtr(data), C.uint(len(data)), C.krb5_cksumtype(checksum.SumType), C.uint(len(checksum.Contents)), unsafeOctetPtr(checksum.Contents), &valid); code != 0 {
+	if code := C.verify_checksum(ctx.ctx, key.toC(), C.krb5_keyusage(usage), bytesToKrb5DataAlias(data), checksum.toC(), &valid); code != 0 {
 		return false, ctx.makeError(code)
 	}
 	return valid != 0, nil

@@ -37,6 +37,16 @@ package krb5
 //                                        krb5_boolean *valid) {
 //   return krb5_c_verify_checksum(context, &key, usage, &data, &cksum, valid);
 // }
+//
+// static krb5_error_code kt_add_entry(krb5_context context, krb5_keytab id,
+//                                     krb5_keytab_entry entry) {
+//   return krb5_kt_add_entry(context, id, &entry);
+// }
+//
+// static krb5_error_code kt_remove_entry(krb5_context context, krb5_keytab id,
+//                                        krb5_keytab_entry entry) {
+//   return krb5_kt_remove_entry(context, id, &entry);
+// }
 import "C"
 
 import (
@@ -416,26 +426,18 @@ func (kt *KeyTab) Type() string {
 func (kt *KeyTab) AddEntry(kte *KeyTabEntry) error {
 	kteC := kte.toC(kt.context)
 	defer freeKrb5KeytabEntry(kt.context, &kteC)
-	if code := C.krb5_kt_add_entry(kt.context.ctx, kt.keytab, &kteC); code != 0 {
+	if code := C.kt_add_entry(kt.context.ctx, kt.keytab, kteC); code != 0 {
 		return kt.context.makeError(code)
 	}
 	return nil
 }
 
 // GetEntry queries a keytab for an entry matching some parameters.
-func (kt *KeyTab) GetEntry(
-	princ *Principal,
-	vno uint,
-	enctype EncType,
-) (*KeyTabEntry, error) {
+func (kt *KeyTab) GetEntry(princ *Principal, vno uint, enctype EncType) (*KeyTabEntry, error) {
 	princC := princ.toC()
 	defer freeKrb5PrincipalData(&princC)
 	var kte C.krb5_keytab_entry
-	if code := C.krb5_kt_get_entry(
-		kt.context.ctx, kt.keytab,
-		&princC, C.krb5_kvno(vno),
-		C.krb5_enctype(enctype), &kte,
-	); code != 0 {
+	if code := C.krb5_kt_get_entry(kt.context.ctx, kt.keytab, &princC, C.krb5_kvno(vno), C.krb5_enctype(enctype), &kte); code != 0 {
 		return nil, kt.context.makeError(code)
 	}
 	defer C.krb5_free_keytab_entry_contents(kt.context.ctx, &kte)
@@ -446,7 +448,7 @@ func (kt *KeyTab) GetEntry(
 func (kt *KeyTab) RemoveEntry(kte *KeyTabEntry) error {
 	kteC := kte.toC(kt.context)
 	defer freeKrb5KeytabEntry(kt.context, &kteC)
-	if code := C.krb5_kt_remove_entry(kt.context.ctx, kt.keytab, &kteC); code != 0 {
+	if code := C.kt_remove_entry(kt.context.ctx, kt.keytab, kteC); code != 0 {
 		return kt.context.makeError(code)
 	}
 	return nil

@@ -47,6 +47,15 @@ package krb5
 //                                        krb5_keytab_entry entry) {
 //   return krb5_kt_remove_entry(context, id, &entry);
 // }
+//
+// static krb5_error_code mk_req_extended(krb5_context context,
+//                                        krb5_auth_context *auth_context,
+//                                        krb5_flags ap_req_options,
+//                                        krb5_data *in_data,
+//                                        krb5_creds in_creds,
+//                                        krb5_data *outbuf) {
+//   return krb5_mk_req_extended(context, auth_context, ap_req_options, in_data, &in_creds, outbuf);
+// }
 import "C"
 
 import (
@@ -114,6 +123,14 @@ func unsafeCharPtr(b []byte) *C.char {
 		return nil
 	}
 	return (*C.char)(unsafe.Pointer(&b[0]))
+}
+
+// Freed with C.free.
+func cOctetPtr(b []byte) *C.krb5_octet {
+	if len(b) == 0 {
+		return nil
+	}
+	return (*C.krb5_octet)(C.CBytes(b))
 }
 
 // Error-handling.
@@ -554,11 +571,12 @@ type Address struct {
 	Contents []byte
 }
 
+// Freed with C.free(unsafe.Pointer(a.contents)).
 func (a *Address) toC() C.krb5_address {
 	return C.krb5_address{
 		addrtype: C.krb5_addrtype(a.Type),
 		length:   C.uint(len(a.Contents)),
-		contents: unsafeOctetPtr(a.Contents)}
+		contents: cOctetPtr(a.Contents)}
 }
 
 func addressFromC(a *C.krb5_address) *Address {
@@ -575,7 +593,9 @@ func (ctx *Context) addressesToC(as []Address) **C.krb5_address {
 	}
 	cArray := make([]C.krb5_address, 0, len(as))
 	for _, a := range as {
-		cArray = append(cArray, a.toC())
+		ca := a.toC()
+		cArray = append(cArray, ca)
+		defer C.free(unsafe.Pointer(ca.contents))
 	}
 	template := make([]*C.krb5_address, 0, len(as)+1)
 	for i := range cArray {
@@ -613,11 +633,12 @@ type AuthData struct {
 	Contents []byte
 }
 
+// Freed with C.free(unsafe.Pointer(a.contents)).
 func (a *AuthData) toC() C.krb5_authdata {
 	return C.krb5_authdata{
 		ad_type:  C.krb5_authdatatype(a.Type),
 		length:   C.uint(len(a.Contents)),
-		contents: unsafeOctetPtr(a.Contents)}
+		contents: cOctetPtr(a.Contents)}
 }
 
 func authDataFromC(a *C.krb5_authdata) *AuthData {
@@ -634,7 +655,9 @@ func (ctx *Context) authDatasToC(as []AuthData) **C.krb5_authdata {
 	}
 	cArray := make([]C.krb5_authdata, 0, len(as))
 	for _, a := range as {
-		cArray = append(cArray, a.toC())
+		ca := a.toC()
+		cArray = append(cArray, ca)
+		defer C.free(unsafe.Pointer(ca.contents))
 	}
 	template := make([]*C.krb5_authdata, 0, len(as)+1)
 	for i := range cArray {
@@ -720,15 +743,20 @@ func (c *Credential) RenewTill() time.Time {
 	return c.EndTime()
 }
 
+// Freed with freeKrb5Creds.
 func (c *Credential) toC(ctx *Context) C.krb5_creds {
 	isSkey := 0
 	if c.IsSkey {
 		isSkey = 1
 	}
+	var kbc C.krb5_keyblock
+	if c.KeyBlock != nil {
+		kbc = c.KeyBlock.toC()
+	}
 	return C.krb5_creds{
 		client:   c.Client.toCPtr(ctx),
 		server:   c.Server.toCPtr(ctx),
-		keyblock: c.KeyBlock.toC(),
+		keyblock: kbc,
 		times: C.krb5_ticket_times{
 			authtime:   C.krb5_timestamp(c.AuthTimeRaw),
 			starttime:  C.krb5_timestamp(c.StartTimeRaw),
@@ -794,12 +822,9 @@ func (ctx *Context) GetInitialCredentialWithKeyTab(
 // TODO(davidben): Expose more of these options.
 func (ctx *Context) GetCredential(
 	cc *CCache, client *Principal, service *Principal) (*Credential, error) {
-	clientC := client.toC()
-	defer freeKrb5PrincipalData(&clientC)
-	serviceC := service.toC()
-	defer freeKrb5PrincipalData(&serviceC)
-
-	inCreds := C.krb5_creds{client: &clientC, server: &serviceC}
+	inCredsG := Credential{Client: client, Server: service}
+	inCreds := inCredsG.toC(ctx)
+	defer freeKrb5Creds(ctx, &inCreds)
 	var outCreds *C.krb5_creds
 	if code := C.krb5_get_credentials(ctx.ctx, 0, cc.ccache, &inCreds, &outCreds); code != 0 {
 		return nil, ctx.makeError(code)
@@ -912,8 +937,8 @@ func (ac *AuthContext) MakeRequest(
 	credC := cred.toC(ac.context)
 	defer freeKrb5Creds(ac.context, &credC)
 	out := C.krb5_data{}
-	if code := C.krb5_mk_req_extended(ac.context.ctx, &ac.authcontext,
-		C.krb5_flags(options), dataC, &credC, &out); code != 0 {
+	if code := C.mk_req_extended(ac.context.ctx, &ac.authcontext,
+		C.krb5_flags(options), dataC, credC, &out); code != 0 {
 		return nil, ac.context.makeError(code)
 	}
 	defer C.krb5_free_data_contents(ac.context.ctx, &out)

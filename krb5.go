@@ -56,6 +56,78 @@ package krb5
 //                                        krb5_data *outbuf) {
 //   return krb5_mk_req_extended(context, auth_context, ap_req_options, in_data, &in_creds, outbuf);
 // }
+//
+// krb5_data *krb5_cc_get_principal_realm(krb5_principal_data *principal) {
+//     return &principal->realm;
+// }
+//
+// void krb5_cc_set_principal_realm(krb5_principal_data *principal, krb5_data realm) {
+//     principal->realm = realm;
+// }
+//
+// krb5_data **krb5_cc_get_principal_data(krb5_principal_data *principal) {
+//     return &principal->data;
+// }
+//
+// void krb5_cc_set_principal_data(krb5_principal_data *principal, krb5_data *data) {
+//     principal->data = data;
+// }
+//
+// krb5_octet **krb5_cc_get_checksum_contents(krb5_checksum *checksum) {
+//     return &checksum->contents;
+// }
+//
+// void krb5_cc_set_checksum_contents(krb5_checksum *checksum, krb5_octet *contents) {
+//     checksum->contents = contents;
+// }
+//
+// krb5_octet **krb5_cc_get_keyblock_contents(krb5_keyblock *keyblock) {
+//     return &keyblock->contents;
+// }
+//
+// void krb5_cc_set_keyblock_contents(krb5_keyblock *keyblock, krb5_octet *contents) {
+//     keyblock->contents = contents;
+// }
+//
+// krb5_principal *krb5_cc_get_entry_principal(krb5_keytab_entry *entry) {
+//     return &entry->principal;
+// }
+//
+// void krb5_cc_set_entry_principal(krb5_keytab_entry *entry, krb5_principal principal) {
+//     entry->principal = principal;
+// }
+//
+// krb5_octet **krb5_cc_get_address_contents(krb5_address *address) {
+//     return &address->contents;
+// }
+//
+// void krb5_cc_set_address_contents(krb5_address *address, krb5_octet *contents) {
+//     address->contents = contents;
+// }
+//
+// krb5_octet **krb5_cc_get_authdata_contents(krb5_authdata *authdata) {
+//     return &authdata->contents;
+// }
+//
+// void krb5_cc_set_authdata_contents(krb5_authdata *authdata, krb5_octet *contents) {
+//     authdata->contents = contents;
+// }
+//
+// krb5_principal *krb5_cc_get_creds_client(krb5_creds *creds) {
+//     return &creds->client;
+// }
+//
+// void krb5_cc_set_creds_client(krb5_creds *creds, krb5_principal client) {
+//     creds->client = client;
+// }
+//
+// krb5_principal *krb5_cc_get_creds_server(krb5_creds *creds) {
+//     return &creds->server;
+// }
+//
+// void krb5_cc_set_creds_server(krb5_creds *creds, krb5_principal server) {
+//     creds->server = server;
+// }
 import "C"
 
 import (
@@ -237,14 +309,14 @@ type Principal struct {
 }
 
 func principalFromC(princ C.krb5_principal) *Principal {
-	dataCast := (*[1 << 30]C.krb5_data)(unsafe.Pointer(princ.data))[:princ.length]
+	dataCast := (*[1 << 30]C.krb5_data)(unsafe.Pointer(*C.krb5_cc_get_principal_data(princ)))[:princ.length]
 	data := make([]string, 0, princ.length)
 	for i := 0; i < int(princ.length); i++ {
 		data = append(data, krb5DataToString(&dataCast[i]))
 	}
 	return &Principal{
 		Type:  NameType(princ._type),
-		Realm: krb5DataToString(&princ.realm),
+		Realm: krb5DataToString(C.krb5_cc_get_principal_realm(princ)),
 		Data:  data}
 }
 
@@ -264,16 +336,17 @@ func (p *Principal) toC() C.krb5_principal_data {
 	for i, v := range data {
 		dataCast[i] = stringToKrb5Data(v)
 	}
-	return C.krb5_principal_data{
-		realm:  stringToKrb5Data(p.Realm),
-		data:   (*C.krb5_data)(dataC),
+	principalC := C.krb5_principal_data{
 		length: C.krb5_int32(len(data)),
 		_type:  C.krb5_int32(p.Type)}
+	C.krb5_cc_set_principal_realm(&principalC, stringToKrb5Data(p.Realm))
+	C.krb5_cc_set_principal_data(&principalC, (*C.krb5_data)(dataC))
+	return principalC
 }
 
 func freeKrb5PrincipalData(p *C.krb5_principal_data) {
-	freeKrb5Data(&p.realm)
-	dataCast := (*[1 << 30]C.krb5_data)(unsafe.Pointer(p.data))[:p.length]
+	freeKrb5Data(C.krb5_cc_get_principal_realm(p))
+	dataCast := (*[1 << 30]C.krb5_data)(unsafe.Pointer(*C.krb5_cc_get_principal_data(p)))[:p.length]
 	for i := 0; i < int(p.length); i++ {
 		freeKrb5Data(&dataCast[i])
 	}
@@ -328,14 +401,15 @@ type Checksum struct {
 func checksumFromC(cksum *C.krb5_checksum) *Checksum {
 	return &Checksum{
 		SumType:  SumType(cksum.checksum_type),
-		Contents: C.GoBytes(unsafe.Pointer(cksum.contents), C.int(cksum.length))}
+		Contents: C.GoBytes(unsafe.Pointer(*C.krb5_cc_get_checksum_contents(cksum)), C.int(cksum.length))}
 }
 
 func (c *Checksum) toC() C.krb5_checksum {
-	return C.krb5_checksum{
+	cksumC := C.krb5_checksum{
 		checksum_type: C.krb5_cksumtype(c.SumType),
-		length:        C.uint(len(c.Contents)),
-		contents:      unsafeOctetPtr(c.Contents)}
+		length:        C.uint(len(c.Contents))}
+	C.krb5_cc_set_checksum_contents(&cksumC, unsafeOctetPtr(c.Contents))
+	return cksumC
 }
 
 // A KeyBlock is a value type containing a Kerberos key.
@@ -348,14 +422,15 @@ type KeyBlock struct {
 func keyBlockFromC(k *C.krb5_keyblock) *KeyBlock {
 	return &KeyBlock{
 		EncType:  EncType(k.enctype),
-		Contents: C.GoBytes(unsafe.Pointer(k.contents), C.int(k.length))}
+		Contents: C.GoBytes(unsafe.Pointer(*C.krb5_cc_get_keyblock_contents(k)), C.int(k.length))}
 }
 
 func (k *KeyBlock) toC() C.krb5_keyblock {
-	return C.krb5_keyblock{
-		enctype:  C.krb5_enctype(k.EncType),
-		length:   C.uint(len(k.Contents)),
-		contents: unsafeOctetPtr(k.Contents)}
+	kC := C.krb5_keyblock{
+		enctype: C.krb5_enctype(k.EncType),
+		length:  C.uint(len(k.Contents))}
+	C.krb5_cc_set_keyblock_contents(&kC, unsafeOctetPtr(k.Contents))
+	return kC
 }
 
 // MakeRandomKey generates a random key for a given enctype.
@@ -399,7 +474,7 @@ type KeyTabEntry struct {
 
 func keyTabEntryFromC(kte *C.krb5_keytab_entry) *KeyTabEntry {
 	return &KeyTabEntry{
-		Principal:    principalFromC(kte.principal),
+		Principal:    principalFromC(*C.krb5_cc_get_entry_principal(kte)),
 		TimestampRaw: int32(kte.timestamp),
 		Version:      uint(kte.vno),
 		Key:          keyBlockFromC(&kte.key)}
@@ -407,15 +482,16 @@ func keyTabEntryFromC(kte *C.krb5_keytab_entry) *KeyTabEntry {
 
 // Freed with freeKrb5KeytabEntry
 func (kte *KeyTabEntry) toC(ctx *Context) C.krb5_keytab_entry {
-	return C.krb5_keytab_entry{
-		principal: kte.Principal.toCPtr(ctx),
+	kteC := C.krb5_keytab_entry{
 		timestamp: C.krb5_timestamp(kte.TimestampRaw),
 		vno:       C.krb5_kvno(kte.Version),
 		key:       kte.Key.toC()}
+	C.krb5_cc_set_entry_principal(&kteC, kte.Principal.toCPtr(ctx))
+	return kteC
 }
 
 func freeKrb5KeytabEntry(ctx *Context, kte *C.krb5_keytab_entry) {
-	C.krb5_free_principal(ctx.ctx, kte.principal)
+	C.krb5_free_principal(ctx.ctx, *C.krb5_cc_get_entry_principal(kte))
 }
 
 // A KeyTab wraps a krb5_keytab.
@@ -573,16 +649,17 @@ type Address struct {
 
 // Freed with C.free(unsafe.Pointer(a.contents)).
 func (a *Address) toC() C.krb5_address {
-	return C.krb5_address{
+	aC := C.krb5_address{
 		addrtype: C.krb5_addrtype(a.Type),
-		length:   C.uint(len(a.Contents)),
-		contents: cOctetPtr(a.Contents)}
+		length:   C.uint(len(a.Contents))}
+	C.krb5_cc_set_address_contents(&aC, cOctetPtr(a.Contents))
+	return aC
 }
 
 func addressFromC(a *C.krb5_address) *Address {
 	return &Address{
 		Type: AddrType(a.addrtype),
-		Contents: C.GoBytes(unsafe.Pointer(a.contents),
+		Contents: C.GoBytes(unsafe.Pointer(*C.krb5_cc_get_address_contents(a)),
 			C.int(a.length))}
 }
 
@@ -595,7 +672,7 @@ func (ctx *Context) addressesToC(as []Address) **C.krb5_address {
 	for _, a := range as {
 		ca := a.toC()
 		cArray = append(cArray, ca)
-		defer C.free(unsafe.Pointer(ca.contents))
+		defer C.free(unsafe.Pointer(*C.krb5_cc_get_address_contents(&ca)))
 	}
 	template := make([]*C.krb5_address, 0, len(as)+1)
 	for i := range cArray {
@@ -635,16 +712,17 @@ type AuthData struct {
 
 // Freed with C.free(unsafe.Pointer(a.contents)).
 func (a *AuthData) toC() C.krb5_authdata {
-	return C.krb5_authdata{
-		ad_type:  C.krb5_authdatatype(a.Type),
-		length:   C.uint(len(a.Contents)),
-		contents: cOctetPtr(a.Contents)}
+	aC := C.krb5_authdata{
+		ad_type: C.krb5_authdatatype(a.Type),
+		length:  C.uint(len(a.Contents))}
+	C.krb5_cc_set_authdata_contents(&aC, cOctetPtr(a.Contents))
+	return aC
 }
 
 func authDataFromC(a *C.krb5_authdata) *AuthData {
 	return &AuthData{
 		Type: int32(a.ad_type),
-		Contents: C.GoBytes(unsafe.Pointer(a.contents),
+		Contents: C.GoBytes(unsafe.Pointer(*C.krb5_cc_get_authdata_contents(a)),
 			C.int(a.length))}
 }
 
@@ -657,7 +735,7 @@ func (ctx *Context) authDatasToC(as []AuthData) **C.krb5_authdata {
 	for _, a := range as {
 		ca := a.toC()
 		cArray = append(cArray, ca)
-		defer C.free(unsafe.Pointer(ca.contents))
+		defer C.free(unsafe.Pointer(*C.krb5_cc_get_authdata_contents(&ca)))
 	}
 	template := make([]*C.krb5_authdata, 0, len(as)+1)
 	for i := range cArray {
@@ -753,9 +831,7 @@ func (c *Credential) toC(ctx *Context) C.krb5_creds {
 	if c.KeyBlock != nil {
 		kbc = c.KeyBlock.toC()
 	}
-	return C.krb5_creds{
-		client:   c.Client.toCPtr(ctx),
-		server:   c.Server.toCPtr(ctx),
+	cC := C.krb5_creds{
 		keyblock: kbc,
 		times: C.krb5_ticket_times{
 			authtime:   C.krb5_timestamp(c.AuthTimeRaw),
@@ -768,11 +844,14 @@ func (c *Credential) toC(ctx *Context) C.krb5_creds {
 		ticket:        bytesToKrb5Data(c.Ticket),
 		second_ticket: bytesToKrb5Data(c.SecondTicket),
 		authdata:      ctx.authDatasToC(c.AuthData)}
+	C.krb5_cc_set_creds_client(&cC, c.Client.toCPtr(ctx))
+	C.krb5_cc_set_creds_server(&cC, c.Server.toCPtr(ctx))
+	return cC
 }
 
 func freeKrb5Creds(ctx *Context, c *C.krb5_creds) {
-	C.krb5_free_principal(ctx.ctx, c.client)
-	C.krb5_free_principal(ctx.ctx, c.server)
+	C.krb5_free_principal(ctx.ctx, *C.krb5_cc_get_creds_client(c))
+	C.krb5_free_principal(ctx.ctx, *C.krb5_cc_get_creds_server(c))
 	freeKrb5Data(&c.ticket)
 	freeKrb5Data(&c.second_ticket)
 	if c.addresses != nil {
@@ -785,8 +864,8 @@ func freeKrb5Creds(ctx *Context, c *C.krb5_creds) {
 
 func credentialFromC(c *C.krb5_creds) *Credential {
 	return &Credential{
-		Client:       principalFromC(c.client),
-		Server:       principalFromC(c.server),
+		Client:       principalFromC(*C.krb5_cc_get_creds_client(c)),
+		Server:       principalFromC(*C.krb5_cc_get_creds_server(c)),
 		KeyBlock:     keyBlockFromC(&c.keyblock),
 		AuthTimeRaw:  int32(c.times.authtime),
 		StartTimeRaw: int32(c.times.starttime),
